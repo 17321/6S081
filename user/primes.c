@@ -2,7 +2,7 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 void prime(int *lp){
-    //子进程不能lp[1]
+    //lp[0]在关闭lp[1]前会一直阻塞
     close(lp[1]);
 
     int p[2];
@@ -15,8 +15,11 @@ void prime(int *lp){
         if(fork()==0){
             prime(p);
         }
+        close(p[0]);
+
         //主进程从lp[0]写入p[1]
         int n=0;
+        //关闭两个写端，read才会停止等待
         while (read(lp[0],&n,sizeof(int))>0){
             if(n%first!=0){
                 write(p[1],&n,sizeof(int));
