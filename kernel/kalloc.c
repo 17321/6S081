@@ -57,6 +57,7 @@ kfree(void *pa)
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
+  //头插
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
