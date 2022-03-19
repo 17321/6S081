@@ -116,6 +116,17 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  //解除原进程映射
+  uvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE, 0);
+  // 将新pagetable复制到kernelpgtbl中
+  if(u2kvmcopy(p->pagetable,p->kernelpgtbl,0,p->sz)<0){
+    goto bad;
+  }
+
+  if(p->pid==1){
+    vmprint(p->pagetable,0);
+  }
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
