@@ -405,6 +405,7 @@ u2kvmcopy(pagetable_t proc_pgtbl, pagetable_t pkernel_pgtbl, uint64 begin, uint6
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte)&(~PTE_U);
+    //从proc_pgtbl中找到pa以后，将pa映射到进程内核页表从0开始的低地址
     if(mappages(pkernel_pgtbl, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
