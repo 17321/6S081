@@ -122,6 +122,7 @@ panic(char *s)
   printf(s);
   printf("\n");
   panicked = 1; // freeze uart output from other CPUs
+  backtrace();
   for(;;)
     ;
 }
@@ -131,4 +132,45 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void){
+  printf("backtrace:\n");
+  uint64 topAddr=r_fp();
+  //当topAddr位于栈底时，PGROUNDUP(topAddr)=PGROUNDDOWN(topAddr)=0x0000003fffffa000
+  while (PGROUNDUP(topAddr) - PGROUNDDOWN(topAddr) == PGSIZE)
+  {
+    uint64 *retAddrPtr=(uint64*)(topAddr-8);
+    uint64 retAddr=*retAddrPtr;
+    printf("%p\n",retAddr);
+
+    topAddr=*(uint64*)(topAddr-16);
+
+    // printf("\n");
+    // printf("%p\n",PGROUNDUP(topAddr));
+    // printf("%p\n",topAddr);
+    // printf("%p\n",PGROUNDDOWN(topAddr));
+    // printf("\n");
+    
+    // backtrace:
+    // 0x0000000080002dbe
+
+    // 0x0000003fffffa000
+    // 0x0000003fffff9fc0
+    // 0x0000003fffff9000
+
+    // 0x0000000080002c20
+
+    // 0x0000003fffffa000
+    // 0x0000003fffff9fe0
+    // 0x0000003fffff9000
+
+    // 0x000000008000290a
+
+    // 0x0000003fffffa000
+    // 0x0000003fffffa000
+    // 0x0000003fffffa000
+
+  }
 }
