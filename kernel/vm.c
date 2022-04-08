@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -101,15 +102,52 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
+  if((pte == 0)||((*pte & PTE_V) == 0)){
+    struct proc * p=myproc();
+  
+    if(va>=p->sz||va<PGROUNDUP(p->trapframe->sp)){
+      return 0;
+    }else{
+      //从kalloc到kfree应该在一起，因为如果没被mappages,kalloc的物理页面应该要被free,而不是直接p->killed
+      pa=(uint64)kalloc();
+      if(pa==0){
+        return 0;
+      }
+      memset((void*)pa,0,PGSIZE);
+      va=PGROUNDDOWN(va);
+      if(mappages(p->pagetable,va,PGSIZE,pa,PTE_W|PTE_R|PTE_U|PTE_X)!=0){
+        kfree((void*)pa);
+        return 0;
+      }
+    }
+    return pa;
+  }
+  if((*pte & PTE_U) == 0){
     return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
-  if((*pte & PTE_U) == 0)
-    return 0;
+  }
   pa = PTE2PA(*pte);
   return pa;
 }
+
+// uint64
+// walkaddr(pagetable_t pagetable, uint64 va)
+// {
+//   pte_t *pte;
+//   uint64 pa;
+
+//   if(va >= MAXVA)
+//     return 0;
+
+//   pte = walk(pagetable, va, 0);
+//   if(pte == 0)
+//     return 0;
+//   if((*pte & PTE_V) == 0)
+//     return 0;
+//   if((*pte & PTE_U) == 0)
+//     return 0;
+//   pa = PTE2PA(*pte);
+//   return pa;
+// }
 
 // add a mapping to the kernel page table.
 // only used when booting.
@@ -179,11 +217,24 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
+  // vmprint(pagetable);
+  // 简而言之, 对于 pte==0 的情况, 一般是 sbrk() 申请了较大内存,
+  // L2 或 L1 中的 PTE 就未分配, 致使 L0 页目录就不存在, 
+  // 虚拟地址对应的 PTE 也就不存在; 而对于之前提到的 (*pte&PTE_V)==0 的情况,
+  // 一般是 sbrk() 申请的内存不是特别大, 当前分配的 L0 页目录还有效, 
+  // 但虚拟地址对应 L0 中的 PTE 无效. 这两种情况都是 Lazy Allocation 
+  // 未实际分配内存所产生的情况, 因此在取消映射时都应该跳过而非 panic.
+
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      // panic("uvmunmap: walk");
+      continue;
+    if((*pte & PTE_V) == 0){
+      // pte = walk(pagetable, a, 0);
+      // panic("uvmunmap: not mapped");
+      //在同一三级页表中，整个大的3级页表(2级页表对应pte的)PTE_V=1，但3级页表对应pte的PTE_V=0
+      continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +366,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      // panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      // panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -439,4 +492,37 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// print page tables lab3-1
+void vmprint(pagetable_t pagetable) {
+    printf("page table %p\n", pagetable);
+    // range top page dir
+    const int PAGE_SIZE = 512;
+    // 遍历最高级页目录
+    for (int i = 0; i < PAGE_SIZE; ++i) {
+        pte_t top_pte = pagetable[i];
+        if (top_pte & PTE_V) {
+            printf("..%d: pte %p pa %p\n", i, top_pte, PTE2PA(top_pte));
+            // this PTE points to a lower-level page table.
+            pagetable_t mid_table = (pagetable_t) PTE2PA(top_pte);
+            // 遍历中间级页目录
+            for (int j = 0; j < PAGE_SIZE; ++j) {
+                pte_t mid_pte = mid_table[j];
+                if (mid_pte & PTE_V) {
+                    printf(".. ..%d: pte %p pa %p\n",
+                           j, mid_pte, PTE2PA(mid_pte));
+                    pagetable_t bot_table = (pagetable_t) PTE2PA(mid_pte);
+                    // 遍历最低级页目录
+                    for (int k = 0; k < PAGE_SIZE; ++k) {
+                        pte_t bot_pte = bot_table[k];
+                        if (bot_pte & PTE_V) {
+                            printf(".. .. ..%d: pte %p pa %p\n",
+                                   k, bot_pte, PTE2PA(bot_pte));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
