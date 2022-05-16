@@ -111,6 +111,51 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+uint64
+walkCowAddr(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  char* mem;
+  uint flags;
+
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if (pte == 0)
+      return 0;
+  if ((*pte & PTE_V) == 0)
+      return 0;
+  if ((*pte & PTE_U) == 0)
+    return 0;
+
+  pa=PTE2PA(*pte);
+
+  if((*pte & PTE_W) == 0 ){
+    if((*pte & PTE_COW) == 0){
+      return 0;
+    }
+    if((mem=kalloc())==0){
+      return 0;
+    }
+    memmove(mem, (void*)pa, PGSIZE);
+
+    flags=PTE_FLAGS(*pte);
+    flags=(flags & (~PTE_COW))|PTE_W;
+    *pte = PA2PTE(pa)|flags;
+    //do_free尝试释放页表
+    uvmunmap(pagetable,PGROUNDDOWN(va),1,1);
+    //如果pagefault,那么需要将发生pagefault的那一页在物理内存中复制，然后让进程mappages这一页
+    if((mappages(pagetable,PGROUNDDOWN(va),PGSIZE,(uint64)mem,flags))!=0){
+      kfree(mem);
+      return 0;
+    }
+    return (uint64)mem;
+  }
+  return pa;
+}
+
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -305,13 +350,13 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,17 +365,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    //这里把PTE_COW置1，PTE_W置0，如果*pte|flags，无法让PTE_W置0
+    flags = (flags | PTE_COW) & (~PTE_W);
+    //因此要通过PA2PTE(pa)把pte后的flags清空
+    *pte = PA2PTE(pa)|flags;
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
+    incPAref(pa);
   }
   return 0;
 
  err:
+  //若mappages失败，之前mappages和incPAref的页面（0～i）需要被uvmunmap和decPAref
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
@@ -358,9 +405,10 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    pa0 = walkCowAddr(pagetable, va0);
+    if(pa0 == 0){
       return -1;
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

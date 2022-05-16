@@ -35,8 +35,11 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    //通过kfree初始化end~PHYSTOP,kfree会调用decPAref导致无法初始化kmem.freelist,所以要先incPAref
+    incPAref((uint64)p);
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -47,10 +50,14 @@ void
 kfree(void *pa)
 {
   struct run *r;
-
+  //pa应该在end～PHYSTOP之间
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  // uint8 ret = decPAref((uint64)pa);
+  if(decPAref((uint64)pa)!=0){
+    return;
+  }
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -75,6 +82,8 @@ kalloc(void)
   if(r)
     kmem.freelist = r->next;
   release(&kmem.lock);
+
+  incPAref((uint64)r);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
