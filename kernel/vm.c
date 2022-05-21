@@ -143,7 +143,8 @@ walkCowAddr(pagetable_t pagetable, uint64 va)
 
     flags=PTE_FLAGS(*pte);
     flags=(flags & (~PTE_COW))|PTE_W;
-    *pte = PA2PTE(pa)|flags;
+    //*pte = PA2PTE(pa)|flags;
+    //进程开辟一个新的页面，kfree回收原先页面(页面引用次数减少)
     //do_free尝试释放页表
     uvmunmap(pagetable,PGROUNDDOWN(va),1,1);
     //如果pagefault,那么需要将发生pagefault的那一页在物理内存中复制，然后让进程mappages这一页
