@@ -29,8 +29,18 @@ barrier()
   //
   // Block until all threads have called barrier() and
   // then increment bstate.round.
-  //
-  
+  //这里不是尝试获得锁（生产者－消费者）,而是让所有线程统一时刻释放锁,所以是if，不是while
+  // 对于 pthread_cond_wait() 涉及三个操作: 原子的释放拥有的锁并阻塞当前线程, 这两个操作是原子的; 第三个操作是由条件变量唤醒后会再次获取锁.
+  pthread_mutex_lock(&bstate.barrier_mutex);
+  bstate.nthread++;
+  if(bstate.nthread!=nthread){
+    pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+  }else{
+    bstate.nthread=0;
+    bstate.round++;
+    pthread_cond_broadcast(&bstate.barrier_cond);
+  }
+  pthread_mutex_unlock(&bstate.barrier_mutex);
 }
 
 static void *
@@ -40,6 +50,7 @@ thread(void *xa)
   long delay;
   int i;
 
+  //如果还有其他进程i=0,那么round=0,此时如果有进程进入i=1,则i!=round,报错
   for (i = 0; i < 20000; i++) {
     int t = bstate.round;
     assert (i == t);
