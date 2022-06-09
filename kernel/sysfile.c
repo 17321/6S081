@@ -283,6 +283,34 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+static struct inode* findFileName(struct inode* ip){
+  uint inums[NSYMLINK];
+  char target[MAXPATH];
+  for(int i=0;i<NSYMLINK;i++){
+    //ip作为cache block的地址,可能会出现重复，不能作为判定成环的依据
+    inums[i]=ip->inum;
+    //从软链接的data_block中拿到path(target)
+    if(readi(ip,0,(uint64)target,0,MAXPATH)<=0){
+      iunlockput(ip);
+      return 0;
+    }
+    iunlockput(ip);
+    if((ip=namei(target))==0){
+      return 0;
+    }
+    ilock(ip);
+    for(int j=0;j<i;j++){
+      if(ip->inum==inums[j]){
+        return 0;
+      }
+    }
+    if(ip->type!=T_SYMLINK){
+      return ip;
+    }
+  }
+  return 0;
+}
+
 uint64
 sys_open(void)
 {
@@ -309,6 +337,7 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    //目录只有只读一个属性
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -320,6 +349,14 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+  
+  //O_NOFOLLOW 如果参数pathname所指的文件为一符号连接, 则会令打开文件失败
+  if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW)==0){
+    if((ip=findFileName(ip))==0){
+      end_op();
+      return -1;
+    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -482,5 +519,32 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+int sys_symlink(void){
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+  int n;
+
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+  if(writei(ip,0,(uint64)target,0,n)<n){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  
+  iunlockput(ip);
+  end_op();
   return 0;
 }
