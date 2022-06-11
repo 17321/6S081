@@ -14,8 +14,11 @@
 #include "fs.h"
 #include "sleeplock.h"
 #include "file.h"
-#include "fcntl.h"
+#include "fcntl.h" 
+#include "memlayout.h" 
 
+#define max(a, b) ((a) > (b) ? (a) : (b))   
+#define min(a, b) ((a) < (b) ? (a) : (b))   
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -481,6 +484,128 @@ sys_pipe(void)
     fileclose(rf);
     fileclose(wf);
     return -1;
+  }
+  return 0;
+}
+
+// void *mmap(void *addr, int length, int prot, int flags, int fd, int offset);
+uint64
+sys_mmap(void){
+  uint64 addr;
+  int length,prot,flags,offset;
+  struct file *f;
+  struct proc *p=myproc();
+  struct vm_area *vma=0;
+  if(argaddr(0,&addr)<0 || argint(1,&length)<0 || argint(2,&prot)<0 || argint(3,&flags)<0 || argfd(4,0,&f)<0 || argint(5,&offset)<0){
+    return -1;
+  }
+  if(flags!= MAP_SHARED && flags != MAP_PRIVATE){
+    return -1;
+  }
+  // 文件不可写则不允许拥有PROT_WRITE权限时映射为MAP_SHARED
+  if(f->writable==0 && (prot&PROT_WRITE)!=0 && flags == MAP_SHARED){
+    return -1;
+  }
+
+  if(length<0||offset<0||offset % PGSIZE){
+    return -1;
+  }
+
+  for(int i=0;i<16;i++){
+    if(!p->vma[i].addr){
+      vma=&p->vma[i];
+    }
+  }
+  if(!vma){
+    return -1;
+  }
+  addr=MMAPMINADDR;
+  for(int i=0;i<16;i++){
+    if(p->vma[i].addr){
+      addr=max(addr,p->vma[i].addr+p->vma[i].len);
+    }
+  }
+  addr=PGROUNDUP(addr);
+  if(addr+length>TRAPFRAME){
+    return -1;
+  }
+  vma->addr=addr;
+  vma->f=f;
+  vma->flags=flags;
+  vma->len=length;
+  vma->offset=offset;
+  vma->prot=prot;
+  filedup(f);
+  return addr;
+}
+
+int munmap(void *addr, int length);
+int sys_munmap(){
+  uint64 addr,va;
+  int length;
+  struct proc *p=myproc();
+  struct vm_area *vma=0;
+  uint maxsz,n,n1;
+  if(argaddr(0,&addr)<0 || argint(1,&length)<0){
+    return -1;
+  }
+  if(addr%PGSIZE || length<0){
+    return -1;
+  }
+  for(int i=0;i<16;i++){
+    if(p->vma[i].addr && addr>=p->vma[i].addr&&addr+length<=p->vma[i].addr+p->vma[i].len){
+      vma=&p->vma[i];
+      break;
+    }
+  }
+  if(!vma){
+    return -1;
+  }
+  if(length==0){
+    return 0;
+  }
+  maxsz = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+  if(vma->flags & MAP_SHARED){
+    for(va = addr; va < addr + length; va += PGSIZE){
+      if(uvmGetDirty(p->pagetable,va) == 0){
+        continue;
+      }
+      //写一个PGSIZE或者最后文件映射不足PGSIZE余下的部分,每次写入maxsz或者pgsize-n*maxsz余下的部分
+      n = min(PGSIZE,addr+length-va);
+      for(int i=0;i<n;i+=n1){
+        n1=min(maxsz,n-i);
+        begin_op();
+        ilock(vma->f->ip);
+        if (writei(vma->f->ip,1,va+i,vma->offset+va+i-vma->addr,n1)!=n1){
+          iunlock(vma->f->ip);
+          end_op();
+          return -1;
+        }
+        iunlock(vma->f->ip);
+        end_op();
+      }
+    }
+  }
+  uvmunmap(p->pagetable,addr,(length - 1) / PGSIZE + 1,0);
+  // uvmunmap(p->pagetable,addr,PGROUNDUP(length)/PGSIZE,0);
+  if(addr==vma->addr&&length==vma->len){
+    vma->addr=0;
+    vma->offset=0;
+    vma->len=0;
+    vma->flags=0;
+    vma->prot=0;
+    fileclose(vma->f);
+    vma->f=0;
+  //头部
+  }else if(addr==vma->addr){
+    vma->addr+=length;
+    vma->offset+=length;
+    vma->len-=length;
+  //尾部
+  }else if(addr+length==vma->addr+vma->len){
+    vma->len-=length;
+  }else{
+    panic("munmap");
   }
   return 0;
 }

@@ -170,11 +170,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
+      // continue;
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
+      // panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
-      panic("uvmunmap: not a leaf");
+      continue;
+      // panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
@@ -428,4 +431,22 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int uvmGetDirty(pagetable_t pagetable,uint64 va){
+  pte_t *pte = walk(pagetable, va, 0);
+  //va不在pagetable中，continue
+  if(pte==0){
+    return 0;
+  }
+  return (*pte&PTE_D);
+}
+
+int uvmSetWriteAndDirty(pagetable_t pagetable,uint64 va){
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte==0){
+    return -1;
+  }
+  *pte|=PTE_W|PTE_D;
+  return 0;
 }

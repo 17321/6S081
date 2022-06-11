@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,9 +69,66 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 12||r_scause() == 13||r_scause() == 15){
+    //针对用户进程空间
+    char* pa;
+    uint64 va=PGROUNDDOWN(r_stval());
+    struct proc *p=myproc();
+    struct vm_area *vma=0;
+    int flags = PTE_U;
+    int offset;
+
+    for(int i=0;i<16;i++){
+      if(p->vma[i].addr&&va>=p->vma[i].addr&&va<=p->vma[i].addr+p->vma[i].len){
+        vma=&p->vma[i];
+        break;
+      }
+    }
+    if(!vma){
+      goto err;
+    }
+    
+    // 写错误(15)时，同时设置PTE_W和PTE_D，脏位写回，因此不能直接设置flags=flags|vma->prot;
+    // 分情况 １)无pte 2)有pte无PTE_W
+    if(r_scause()==15 && walkaddr(p->pagetable,va) && (vma->prot & PROT_WRITE)){
+      if(uvmSetWriteAndDirty(p->pagetable,va)){
+        goto err;
+      }
+    }else{
+      if((pa=kalloc())==0){
+        goto err;
+      }
+      memset(pa,0,PGSIZE);
+      ilock(vma->f->ip);
+      offset=va-vma->addr+vma->offset;
+      if(readi(vma->f->ip,0,(uint64)pa,offset,PGSIZE)<0){
+        iunlock(vma->f->ip);
+        goto err;
+      }
+      iunlock(vma->f->ip);
+
+      //设置flags
+      if(vma->prot&PROT_READ){
+        flags|=PTE_R;
+      }
+
+      if(vma->prot&PROT_EXEC){
+        flags|=PTE_X;
+      }
+
+      if((vma->prot&PROT_WRITE)&&r_scause()==15){
+        flags|=PTE_W|PTE_D;
+      }
+      // mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+      if(mappages(p->pagetable, va, PGSIZE,(uint64)pa, flags) != 0){
+        kfree(pa);
+        goto err;
+      }
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
+err:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

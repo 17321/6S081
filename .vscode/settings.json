@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "fcntl.h": "c",
+        "limits": "c",
+        "*.tcc": "c",
+        "memlayout.h": "c",
+        "sleeplock.h": "c",
+        "file.h": "c",
+        "defs.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "Enabled"
+}
